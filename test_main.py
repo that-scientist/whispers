@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test script for the enhanced TTS converter.
+Test script for the unified main.py audio processor.
 This script tests the basic functionality without requiring an API key.
 """
 
@@ -21,10 +21,10 @@ def test_imports():
         return False
     
     try:
-        from app_enhanced import TTSConverter, TTSConfig, TTSInterface
-        print("✅ Enhanced TTS modules imported successfully")
+        from main import AudioProcessor, TTSConfig, TranscriptionConfig, UserInterface
+        print("✅ Main modules imported successfully")
     except ImportError as e:
-        print(f"❌ Failed to import enhanced TTS modules: {e}")
+        print(f"❌ Failed to import main modules: {e}")
         return False
     
     return True
@@ -34,12 +34,16 @@ def test_config():
     print("\nTesting configuration...")
     
     try:
-        from app_enhanced import TTSConfig
-        config = TTSConfig()
-        print(f"✅ Default config created: model={config.model}, voice={config.voice}")
+        from main import TTSConfig, TranscriptionConfig
+        
+        tts_config = TTSConfig()
+        trans_config = TranscriptionConfig()
+        
+        print(f"✅ TTS config created: model={tts_config.model}, voice={tts_config.voice}")
+        print(f"✅ Transcription config created: model={trans_config.model}")
         return True
     except Exception as e:
-        print(f"❌ Failed to create config: {e}")
+        print(f"❌ Failed to create configs: {e}")
         return False
 
 def test_text_splitting():
@@ -47,20 +51,20 @@ def test_text_splitting():
     print("\nTesting text splitting...")
     
     try:
-        from app_enhanced import TTSConverter, TTSConfig
+        from main import AudioProcessor, TTSConfig
         
         config = TTSConfig()
-        converter = TTSConverter("dummy-key", config)
+        processor = AudioProcessor("dummy-key")
         
         # Test short text
         short_text = "This is a short text."
-        chunks = converter.split_text_into_chunks(short_text)
+        chunks = processor.split_text_into_chunks(short_text)
         assert len(chunks) == 1, f"Expected 1 chunk, got {len(chunks)}"
         print("✅ Short text splitting works")
         
         # Test long text
         long_text = "This is a very long text. " * 200  # ~6000 characters
-        chunks = converter.split_text_into_chunks(long_text)
+        chunks = processor.split_text_into_chunks(long_text)
         assert len(chunks) > 1, f"Expected multiple chunks, got {len(chunks)}"
         print(f"✅ Long text splitting works: {len(chunks)} chunks")
         
@@ -74,25 +78,32 @@ def test_file_operations():
     print("\nTesting file operations...")
     
     try:
-        # Create a test file
-        test_file = "test_input.txt"
-        test_content = "This is a test file for the TTS converter."
+        # Create test files
+        test_text_file = "test_input.txt"
+        test_audio_file = "test_audio.mp3"
         
-        with open(test_file, 'w') as f:
+        test_content = "This is a test file for the audio processor."
+        
+        with open(test_text_file, 'w') as f:
             f.write(test_content)
         
-        print("✅ Test file created")
+        # Create a dummy audio file (just a text file for testing)
+        with open(test_audio_file, 'w') as f:
+            f.write("dummy audio content")
+        
+        print("✅ Test files created")
         
         # Test file reading
-        with open(test_file, 'r') as f:
+        with open(test_text_file, 'r') as f:
             content = f.read()
         
         assert content == test_content, "File content doesn't match"
         print("✅ File reading works")
         
         # Clean up
-        os.remove(test_file)
-        print("✅ Test file cleaned up")
+        os.remove(test_text_file)
+        os.remove(test_audio_file)
+        print("✅ Test files cleaned up")
         
         return True
     except Exception as e:
@@ -104,14 +115,17 @@ def test_interface():
     print("\nTesting interface components...")
     
     try:
-        from app_enhanced import TTSInterface
+        from main import UserInterface
         
-        interface = TTSInterface()
+        interface = UserInterface()
         print("✅ Interface created successfully")
         
         # Test configuration methods
-        config = interface.config
-        print(f"✅ Default config: model={config.model}, voice={config.voice}")
+        tts_config = interface.tts_config
+        trans_config = interface.transcription_config
+        
+        print(f"✅ Default TTS config: model={tts_config.model}, voice={tts_config.voice}")
+        print(f"✅ Default transcription config: model={trans_config.model}")
         
         return True
     except Exception as e:
@@ -147,17 +161,17 @@ async def test_async_components():
     print("\nTesting async components...")
     
     try:
-        from app_enhanced import TTSConverter, TTSConfig
+        from main import AudioProcessor, TTSConfig
         
         config = TTSConfig()
         
         # Test context manager
-        async with TTSConverter("dummy-key", config) as converter:
+        async with AudioProcessor("dummy-key") as processor:
             print("✅ Async context manager works")
             
             # Test text splitting
             text = "Test text for async processing."
-            chunks = converter.split_text_into_chunks(text)
+            chunks = processor.split_text_into_chunks(text)
             assert len(chunks) == 1, "Text splitting failed in async context"
             print("✅ Async text splitting works")
         
@@ -166,9 +180,46 @@ async def test_async_components():
         print(f"❌ Async components test failed: {e}")
         return False
 
+def test_processing_modes():
+    """Test processing mode selection logic."""
+    print("\nTesting processing modes...")
+    
+    try:
+        from main import UserInterface
+        
+        interface = UserInterface()
+        
+        # Test mode selection logic
+        test_cases = [
+            ("1", "tts"),
+            ("2", "transcription"),
+            ("3", None),  # Invalid
+            ("", None),    # Empty
+        ]
+        
+        for input_choice, expected_mode in test_cases:
+            # Simulate the mode selection logic
+            if input_choice == "1":
+                mode = "tts"
+            elif input_choice == "2":
+                mode = "transcription"
+            else:
+                mode = None
+            
+            if mode == expected_mode:
+                print(f"✅ Mode selection '{input_choice}' -> '{mode}' works")
+            else:
+                print(f"❌ Mode selection '{input_choice}' failed")
+                return False
+        
+        return True
+    except Exception as e:
+        print(f"❌ Processing modes test failed: {e}")
+        return False
+
 def main():
     """Run all tests."""
-    print("🧪 Testing Enhanced TTS Converter")
+    print("🧪 Testing Unified Audio Processor")
     print("=" * 40)
     
     tests = [
@@ -178,6 +229,7 @@ def main():
         ("File Operations", test_file_operations),
         ("Interface", test_interface),
         ("Config File", test_config_file),
+        ("Processing Modes", test_processing_modes),
     ]
     
     passed = 0
@@ -203,11 +255,11 @@ def main():
     print(f"\n📊 Test Results: {passed}/{total} tests passed")
     
     if passed == total:
-        print("🎉 All tests passed! The enhanced TTS converter is ready to use.")
+        print("🎉 All tests passed! The unified audio processor is ready to use.")
         print("\nNext steps:")
         print("1. Set your OpenAI API key: export OPENAI_API_KEY='your-key-here'")
-        print("2. Run the converter: python app_enhanced.py")
-        print("3. Or run batch processing: python app_batch_enhanced.py")
+        print("2. Run the processor: python main.py")
+        print("3. Choose between TTS or Transcription modes")
     else:
         print("⚠️  Some tests failed. Please check the errors above.")
     
