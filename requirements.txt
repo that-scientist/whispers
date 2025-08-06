@@ -1,2 +1,11 @@
-aiohttp>=3.8.0
-pydub>=0.25.0
+# Core dependencies for the enhanced TTS converter
+aiohttp>=3.8.0,<4.0.0
+typing-extensions>=4.0.0
+
+# Optional: For audio file manipulation (if pydub issues are resolved)
+# pydub>=0.25.0
+
+# Development dependencies (optional)
+# pytest>=7.0.0
+# black>=22.0.0
+# flake8>=5.0.0
