@@ -47,7 +47,7 @@ class TranscriptionConfig:
     temperature: float = 0.0
 
 class AudioProcessor:
-    """Unified audio processor for TTS and transcription."""
+    """Unified audio processor for TTS and transcription using file upload."""
     
     def __init__(self, api_key: str):
         self.api_key = api_key
@@ -61,26 +61,33 @@ class AudioProcessor:
         if self.session:
             await self.session.close()
     
-    # TTS Methods
-    async def convert_text_to_speech(self, text: str, config: TTSConfig, retries: int = 3) -> bytes:
-        """Convert text to speech with retry logic."""
+    async def upload_text_file_for_tts(self, file_path: str, config: TTSConfig, retries: int = 3) -> bytes:
+        """Upload text file for TTS conversion using file upload."""
         for attempt in range(retries):
             try:
-                response = await self.session.post(
-                    "https://api.openai.com/v1/audio/speech",
-                    headers={"Authorization": f"Bearer {self.api_key}"},
-                    json={
-                        "model": config.model,
-                        "voice": config.voice,
-                        "response_format": config.response_format,
-                        "speed": config.speed,
-                        "input": text
-                    },
-                    timeout=aiohttp.ClientTimeout(total=60)
-                )
+                logger.info(f"Uploading text file for TTS: {file_path} (Attempt {attempt + 1}/{retries})")
+                
+                # Prepare the file for upload
+                with open(file_path, 'rb') as f:
+                    files = {'file': (os.path.basename(file_path), f, 'text/plain')}
+                    
+                    response = await self.session.post(
+                        "https://api.openai.com/v1/audio/speech",
+                        headers={"Authorization": f"Bearer {self.api_key}"},
+                        data={
+                            "model": config.model,
+                            "voice": config.voice,
+                            "response_format": config.response_format,
+                            "speed": config.speed
+                        },
+                        files=files,
+                        timeout=aiohttp.ClientTimeout(total=60)
+                    )
                 
                 if response.status == 200:
-                    return await response.read()
+                    audio_data = await response.read()
+                    logger.info("✅ Text file uploaded and converted to speech successfully")
+                    return audio_data
                 elif response.status == 429:
                     retry_after = int(response.headers.get('Retry-After', 60))
                     logger.warning(f"Rate limited. Waiting {retry_after} seconds...")
@@ -88,56 +95,32 @@ class AudioProcessor:
                     continue
                 else:
                     error_text = await response.text()
-                    logger.error(f"API request failed: {response.status} - {error_text}")
+                    logger.error(f"TTS API request failed: {response.status} - {error_text}")
                     if attempt == retries - 1:
-                        raise Exception(f"API request failed after {retries} attempts")
+                        raise Exception(f"TTS API request failed after {retries} attempts")
                     await asyncio.sleep(2 ** attempt)
                     
             except asyncio.TimeoutError:
-                logger.error(f"Request timeout on attempt {attempt + 1}")
+                logger.error(f"TTS request timeout on attempt {attempt + 1}")
                 if attempt == retries - 1:
-                    raise Exception("Request timeout after all retries")
+                    raise Exception("TTS request timeout after all retries")
                 await asyncio.sleep(2 ** attempt)
             except Exception as e:
-                logger.error(f"Request failed on attempt {attempt + 1}: {e}")
+                logger.error(f"TTS request failed on attempt {attempt + 1}: {e}")
                 if attempt == retries - 1:
                     raise
                 await asyncio.sleep(2 ** attempt)
-    
-    def split_text_into_chunks(self, text: str, max_chars: int = 4096) -> List[str]:
-        """Split text into chunks respecting word boundaries."""
-        if len(text) <= max_chars:
-            return [text]
         
-        chunks = []
-        while text:
-            if len(text) <= max_chars:
-                chunks.append(text)
-                break
-            
-            # Find the last space within the limit
-            split_point = text.rfind(' ', 0, max_chars)
-            if split_point == -1:
-                split_point = max_chars
-            
-            chunks.append(text[:split_point])
-            text = text[split_point:].lstrip()
-        
-        return chunks
+        raise Exception("Failed to convert text file to speech")
     
     async def process_tts_file(self, file_path: str, config: TTSConfig, output_dir: Optional[str] = None) -> bool:
-        """Process a text file and convert it to speech."""
+        """Process a text file and convert it to speech using file upload."""
         try:
-            # Read the file
-            with open(file_path, 'r', encoding='utf-8') as f:
-                text_content = f.read()
-            
             logger.info(f"Processing TTS file: {file_path}")
-            logger.info(f"Text length: {len(text_content)} characters")
             
-            # Split into chunks if necessary
-            chunks = self.split_text_into_chunks(text_content, config.max_chars)
-            logger.info(f"Split into {len(chunks)} chunks")
+            # Check file size
+            file_size = os.path.getsize(file_path)
+            logger.info(f"File size: {file_size} bytes")
             
             # Determine output path
             input_path = Path(file_path)
@@ -146,44 +129,15 @@ class AudioProcessor:
             else:
                 output_path = input_path.with_suffix(f'.{config.response_format}')
             
-            # Process chunks
-            if len(chunks) == 1:
-                logger.info("Processing single chunk...")
-                audio_data = await self.convert_text_to_speech(chunks[0], config)
-                
-                with open(output_path, 'wb') as f:
-                    f.write(audio_data)
-                
-                logger.info(f"✅ Successfully created: {output_path}")
-                logger.info(f"File size: {len(audio_data)} bytes")
-                
-            else:
-                logger.info("Processing multiple chunks...")
-                temp_files = []
-                
-                for i, chunk in enumerate(chunks, 1):
-                    logger.info(f"Processing chunk {i}/{len(chunks)}...")
-                    
-                    audio_data = await self.convert_text_to_speech(chunk, config)
-                    
-                    # Save temporary file
-                    temp_path = output_path.with_stem(f"{output_path.stem}_temp_{i}")
-                    with open(temp_path, 'wb') as f:
-                        f.write(audio_data)
-                    temp_files.append(temp_path)
-                    
-                    logger.info(f"✅ Chunk {i} saved: {temp_path}")
-                    
-                    # Rate limiting (except for last chunk)
-                    if i < len(chunks):
-                        delay = 6 if config.model == "tts-1-hd" else 0.6
-                        logger.info(f"⏳ Waiting {delay}s for rate limit...")
-                        await asyncio.sleep(delay)
-                
-                logger.info(f"✅ All chunks processed. Individual files saved:")
-                for temp_file in temp_files:
-                    logger.info(f"  - {temp_file}")
-                logger.info("Note: Use a media player to combine the files if needed.")
+            # Upload file and get audio data
+            audio_data = await self.upload_text_file_for_tts(file_path, config)
+            
+            # Save the audio file
+            with open(output_path, 'wb') as f:
+                f.write(audio_data)
+            
+            logger.info(f"✅ Successfully created: {output_path}")
+            logger.info(f"Audio file size: {len(audio_data)} bytes")
             
             return True
             
@@ -191,7 +145,6 @@ class AudioProcessor:
             logger.error(f"❌ Error processing TTS file: {e}")
             return False
     
-    # Transcription Methods
     async def upload_file_for_transcription(self, file_path: str) -> str:
         """Upload a file for batch transcription."""
         try:
@@ -224,26 +177,6 @@ class AudioProcessor:
                 
         except Exception as e:
             logger.error(f"❌ Error uploading file: {e}")
-            raise
-    
-    async def check_transcription_status(self, task_id: str) -> Dict:
-        """Check the status of a batch transcription task."""
-        try:
-            response = await self.session.get(
-                f"https://api.openai.com/v1/audio/transcriptions/{task_id}",
-                headers={"Authorization": f"Bearer {self.api_key}"},
-                timeout=aiohttp.ClientTimeout(total=30)
-            )
-            
-            if response.status == 200:
-                return await response.json()
-            else:
-                error_text = await response.text()
-                logger.error(f"Status check failed: {response.status} - {error_text}")
-                raise Exception(f"Status check failed: {response.status}")
-                
-        except Exception as e:
-            logger.error(f"❌ Error checking status: {e}")
             raise
     
     async def process_transcription_file(self, file_path: str, config: TranscriptionConfig, output_dir: Optional[str] = None) -> bool:
@@ -303,8 +236,8 @@ class UserInterface:
         print("\n🎤 OpenAI Audio Processing Tool")
         print("=" * 40)
         print("Available processing modes:")
-        print("1. Text-to-Speech (Real-time)")
-        print("2. Audio Transcription (Batch)")
+        print("1. Text-to-Speech (File Upload)")
+        print("2. Audio Transcription (File Upload)")
         
         while True:
             choice = input("Select mode (1 or 2): ").strip()
@@ -408,8 +341,9 @@ class UserInterface:
             else:
                 print("Please enter a number between 1 and 5.")
         
-        # Optional prompt
-        print("\nOptional prompt (to help with context):")
+        # Prompt option
+        print("\nContext prompt (optional):")
+        print("Add a prompt to improve transcription accuracy")
         prompt = input("Enter prompt (or press Enter to skip): ").strip()
         if prompt:
             self.transcription_config.prompt = prompt
@@ -426,6 +360,7 @@ class UserInterface:
         
         if mode == "tts":
             print("\nEnter the path to your text file:")
+            print("Supported formats: .txt, .md, .json, .csv")
         else:
             print("\nEnter the path to your audio file:")
             print("Supported formats: mp3, mp4, mpeg, mpga, m4a, wav, webm")
