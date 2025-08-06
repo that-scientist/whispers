@@ -1,7 +1,20 @@
 #!/usr/bin/env python3
 """
 Unified OpenAI Audio Processing Tool
-Supports both real-time TTS and batch transcription with file upload.
+
+This module provides a comprehensive interface for both Text-to-Speech (TTS) and 
+Audio Transcription using OpenAI's APIs. All operations use file upload for 
+reliability and to handle large files efficiently.
+
+Key Features:
+- TTS: Convert text files to speech using file upload
+- Transcription: Convert audio files to text using file upload
+- Rate limiting: Automatic handling of API rate limits
+- Error recovery: Robust retry logic with exponential backoff
+- Logging: Comprehensive logging for debugging and monitoring
+
+Author: OpenAI Audio Processing Team
+Version: 2.0.0
 """
 
 import os
@@ -10,16 +23,16 @@ import aiohttp
 import json
 import logging
 from pathlib import Path
-from typing import Optional, Dict, List, Tuple
-from dataclasses import dataclass
+from typing import Optional, Dict, List, Tuple, Any
+from dataclasses import dataclass, asdict
 from datetime import datetime
 import sys
 import time
 
-# Configure logging
+# Configure comprehensive logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler('audio_processor.log'),
         logging.StreamHandler(sys.stdout)
@@ -29,45 +42,108 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class TTSConfig:
-    """Configuration for TTS conversion."""
+    """
+    Configuration for Text-to-Speech conversion.
+    
+    Attributes:
+        model: OpenAI TTS model to use ('tts-1' or 'tts-1-hd')
+        voice: Voice identifier for speech synthesis
+        response_format: Audio output format ('aac', 'mp3', 'opus', 'flac')
+        speed: Speech rate multiplier (0.75 to 1.5)
+        max_chars: Maximum characters per request (for chunking if needed)
+        rate_limit_delay: Delay between requests to respect rate limits
+    """
     model: str = "tts-1"
     voice: str = "alloy"
     response_format: str = "aac"
     speed: float = 1.1
     max_chars: int = 4096
     rate_limit_delay: float = 0.6
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert configuration to dictionary for serialization."""
+        return asdict(self)
 
 @dataclass
 class TranscriptionConfig:
-    """Configuration for batch transcription."""
+    """
+    Configuration for audio transcription.
+    
+    Attributes:
+        model: OpenAI Whisper model to use (typically 'whisper-1')
+        response_format: Output format ('json', 'verbose_json', 'text', 'srt', 'vtt')
+        language: Language code for transcription (None for auto-detect)
+        prompt: Context prompt to improve transcription accuracy
+        temperature: Sampling temperature (0.0 for deterministic output)
+    """
     model: str = "whisper-1"
     response_format: str = "verbose_json"
     language: Optional[str] = None
     prompt: Optional[str] = None
     temperature: float = 0.0
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert configuration to dictionary for serialization."""
+        return asdict(self)
 
 class AudioProcessor:
-    """Unified audio processor for TTS and transcription using file upload."""
+    """
+    Unified audio processor for TTS and transcription using file upload.
+    
+    This class handles all interactions with OpenAI's audio APIs, including
+    file uploads, rate limiting, error handling, and response processing.
+    
+    Attributes:
+        api_key: OpenAI API key for authentication
+        session: aiohttp client session for HTTP requests
+    """
     
     def __init__(self, api_key: str):
+        """
+        Initialize the audio processor.
+        
+        Args:
+            api_key: Valid OpenAI API key for authentication
+        """
         self.api_key = api_key
         self.session: Optional[aiohttp.ClientSession] = None
         
     async def __aenter__(self):
+        """Async context manager entry - create HTTP session."""
         self.session = aiohttp.ClientSession()
         return self
         
     async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Async context manager exit - cleanup HTTP session."""
         if self.session:
             await self.session.close()
     
     async def upload_text_file_for_tts(self, file_path: str, config: TTSConfig, retries: int = 3) -> bytes:
-        """Upload text file for TTS conversion using file upload."""
+        """
+        Upload text file for TTS conversion using file upload.
+        
+        This method uploads a text file to OpenAI's TTS API and returns
+        the generated audio data. It includes comprehensive error handling
+        and retry logic with exponential backoff.
+        
+        Args:
+            file_path: Path to the text file to convert
+            config: TTS configuration settings
+            retries: Number of retry attempts for failed requests
+            
+        Returns:
+            bytes: Audio data in the specified format
+            
+        Raises:
+            Exception: If all retry attempts fail
+            FileNotFoundError: If the input file doesn't exist
+            aiohttp.ClientError: For network-related errors
+        """
         for attempt in range(retries):
             try:
                 logger.info(f"Uploading text file for TTS: {file_path} (Attempt {attempt + 1}/{retries})")
                 
-                # Prepare the file for upload
+                # Prepare the file for upload with proper MIME type
                 with open(file_path, 'rb') as f:
                     files = {'file': (os.path.basename(file_path), f, 'text/plain')}
                     
@@ -114,11 +190,32 @@ class AudioProcessor:
         raise Exception("Failed to convert text file to speech")
     
     async def process_tts_file(self, file_path: str, config: TTSConfig, output_dir: Optional[str] = None) -> bool:
-        """Process a text file and convert it to speech using file upload."""
+        """
+        Process a text file and convert it to speech using file upload.
+        
+        This method handles the complete TTS workflow: file validation,
+        upload to OpenAI API, and saving the resulting audio file.
+        
+        Args:
+            file_path: Path to the input text file
+            config: TTS configuration settings
+            output_dir: Optional output directory (uses input directory if None)
+            
+        Returns:
+            bool: True if processing succeeded, False otherwise
+            
+        Raises:
+            FileNotFoundError: If input file doesn't exist
+            PermissionError: If output directory is not writable
+        """
         try:
             logger.info(f"Processing TTS file: {file_path}")
             
-            # Check file size
+            # Validate input file exists
+            if not os.path.exists(file_path):
+                raise FileNotFoundError(f"Input file not found: {file_path}")
+            
+            # Check file size for logging
             file_size = os.path.getsize(file_path)
             logger.info(f"File size: {file_size} bytes")
             
@@ -128,6 +225,9 @@ class AudioProcessor:
                 output_path = Path(output_dir) / f"{input_path.stem}.{config.response_format}"
             else:
                 output_path = input_path.with_suffix(f'.{config.response_format}')
+            
+            # Ensure output directory exists
+            output_path.parent.mkdir(parents=True, exist_ok=True)
             
             # Upload file and get audio data
             audio_data = await self.upload_text_file_for_tts(file_path, config)
@@ -146,11 +246,30 @@ class AudioProcessor:
             return False
     
     async def upload_file_for_transcription(self, file_path: str) -> str:
-        """Upload a file for batch transcription."""
+        """
+        Upload a file for batch transcription using OpenAI's Whisper API.
+        
+        This method uploads an audio file to OpenAI's transcription API
+        and returns the transcription result as JSON.
+        
+        Args:
+            file_path: Path to the audio file to transcribe
+            
+        Returns:
+            str: JSON string containing transcription data
+            
+        Raises:
+            FileNotFoundError: If input file doesn't exist
+            aiohttp.ClientError: For network-related errors
+        """
         try:
             logger.info(f"Uploading file for transcription: {file_path}")
             
-            # Prepare the file for upload
+            # Validate input file exists
+            if not os.path.exists(file_path):
+                raise FileNotFoundError(f"Input file not found: {file_path}")
+            
+            # Prepare the file for upload with proper MIME type
             with open(file_path, 'rb') as f:
                 files = {'file': (os.path.basename(file_path), f, 'audio/*')}
                 
@@ -180,9 +299,30 @@ class AudioProcessor:
             raise
     
     async def process_transcription_file(self, file_path: str, config: TranscriptionConfig, output_dir: Optional[str] = None) -> bool:
-        """Process an audio file for transcription."""
+        """
+        Process an audio file for transcription.
+        
+        This method handles the complete transcription workflow: file validation,
+        upload to OpenAI API, and saving the transcription results.
+        
+        Args:
+            file_path: Path to the input audio file
+            config: Transcription configuration settings
+            output_dir: Optional output directory (uses input directory if None)
+            
+        Returns:
+            bool: True if processing succeeded, False otherwise
+            
+        Raises:
+            FileNotFoundError: If input file doesn't exist
+            PermissionError: If output directory is not writable
+        """
         try:
             logger.info(f"Processing transcription file: {file_path}")
+            
+            # Validate input file exists
+            if not os.path.exists(file_path):
+                raise FileNotFoundError(f"Input file not found: {file_path}")
             
             # Upload file for transcription
             result = await self.upload_file_for_transcription(file_path)
@@ -193,6 +333,9 @@ class AudioProcessor:
                 output_path = Path(output_dir) / f"{input_path.stem}_transcription.json"
             else:
                 output_path = input_path.with_suffix('_transcription.json')
+            
+            # Ensure output directory exists
+            output_path.parent.mkdir(parents=True, exist_ok=True)
             
             # Save transcription result
             with open(output_path, 'w') as f:
@@ -214,14 +357,29 @@ class AudioProcessor:
             return False
 
 class UserInterface:
-    """Unified user interface for audio processing."""
+    """
+    Unified user interface for audio processing.
+    
+    This class handles all user interactions including configuration,
+    file selection, and output directory management.
+    
+    Attributes:
+        tts_config: Current TTS configuration
+        transcription_config: Current transcription configuration
+    """
     
     def __init__(self):
+        """Initialize the user interface with default configurations."""
         self.tts_config = TTSConfig()
         self.transcription_config = TranscriptionConfig()
     
     def get_api_key(self) -> Optional[str]:
-        """Get API key from environment or user input."""
+        """
+        Get API key from environment or user input.
+        
+        Returns:
+            Optional[str]: Valid API key or None if not provided
+        """
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
             print("Please set your OpenAI API key:")
@@ -232,7 +390,12 @@ class UserInterface:
         return api_key if api_key else None
     
     def select_processing_mode(self) -> str:
-        """Let user select the processing mode."""
+        """
+        Let user select the processing mode.
+        
+        Returns:
+            str: Selected mode ('tts' or 'transcription')
+        """
         print("\n🎤 OpenAI Audio Processing Tool")
         print("=" * 40)
         print("Available processing modes:")
@@ -249,12 +412,17 @@ class UserInterface:
                 print("Please enter 1 or 2.")
     
     def configure_tts_settings(self):
-        """Configure TTS settings."""
+        """
+        Configure TTS settings through interactive prompts.
+        
+        This method guides users through selecting model, voice, and speed
+        options for text-to-speech conversion.
+        """
         print("\n" + "="*30)
         print("CONFIGURE TTS SETTINGS")
         print("="*30)
         
-        # Model selection
+        # Model selection with clear descriptions
         print("\nAvailable models:")
         print("1. tts-1 (Normal) - Faster, lower quality")
         print("2. tts-1-hd (High Definition) - Slower, higher quality")
@@ -272,7 +440,7 @@ class UserInterface:
             else:
                 print("Please enter 1 or 2.")
         
-        # Voice selection
+        # Voice selection with descriptions
         voices = {
             "1": "alloy",
             "2": "echo", 
@@ -294,7 +462,7 @@ class UserInterface:
             else:
                 print("Please enter a number between 1 and 6.")
         
-        # Speed selection
+        # Speed selection with clear options
         print("\nSpeech speed:")
         print("1. Slow (0.75x)")
         print("2. Normal (1.0x)")
@@ -312,12 +480,17 @@ class UserInterface:
                 print("Please enter a number between 1 and 4.")
     
     def configure_transcription_settings(self):
-        """Configure transcription settings."""
+        """
+        Configure transcription settings through interactive prompts.
+        
+        This method guides users through selecting language and prompt
+        options for audio transcription.
+        """
         print("\n" + "="*30)
         print("CONFIGURE TRANSCRIPTION SETTINGS")
         print("="*30)
         
-        # Language selection
+        # Language selection with clear descriptions
         print("\nLanguage options:")
         print("1. Auto-detect (recommended)")
         print("2. English")
@@ -341,7 +514,7 @@ class UserInterface:
             else:
                 print("Please enter a number between 1 and 5.")
         
-        # Prompt option
+        # Prompt option for context
         print("\nContext prompt (optional):")
         print("Add a prompt to improve transcription accuracy")
         prompt = input("Enter prompt (or press Enter to skip): ").strip()
@@ -349,7 +522,15 @@ class UserInterface:
             self.transcription_config.prompt = prompt
     
     def get_file_path(self, mode: str) -> Optional[str]:
-        """Get the input file path."""
+        """
+        Get the input file path from command line or user input.
+        
+        Args:
+            mode: Processing mode ('tts' or 'transcription')
+            
+        Returns:
+            Optional[str]: Valid file path or None if not provided
+        """
         if len(sys.argv) > 1:
             file_path = sys.argv[1]
             if os.path.exists(file_path):
@@ -377,7 +558,12 @@ class UserInterface:
         return file_path
     
     def get_output_directory(self) -> Optional[str]:
-        """Get the output directory."""
+        """
+        Get the output directory from user input.
+        
+        Returns:
+            Optional[str]: Output directory path or None for same directory
+        """
         print("\nOutput options:")
         print("1. Save in same directory as input file")
         print("2. Specify custom output directory")
@@ -400,10 +586,19 @@ class UserInterface:
                 print("Please enter 1 or 2.")
 
 async def main():
-    """Main function."""
+    """
+    Main function orchestrating the audio processing workflow.
+    
+    This function handles the complete workflow:
+    1. API key validation
+    2. Mode selection
+    3. Configuration setup
+    4. File processing
+    5. Error handling and logging
+    """
     interface = UserInterface()
     
-    # Get API key
+    # Get API key with validation
     api_key = interface.get_api_key()
     if not api_key:
         print("❌ API key is required.")
@@ -418,7 +613,7 @@ async def main():
     else:
         interface.configure_transcription_settings()
     
-    # Get file path
+    # Get file path with validation
     file_path = interface.get_file_path(mode)
     if not file_path:
         print("❌ No valid file selected.")
@@ -427,7 +622,7 @@ async def main():
     # Get output directory
     output_dir = interface.get_output_directory()
     
-    # Process the file
+    # Process the file with comprehensive error handling
     async with AudioProcessor(api_key) as processor:
         if mode == "tts":
             success = await processor.process_tts_file(file_path, interface.tts_config, output_dir)
